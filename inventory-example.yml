@@ -1,0 +1,50 @@
+# Example inventory for ./run.sh.
+# Copy to inventory.yml (gitignored) and edit addresses / hostnames:
+#   cp inventory-example.yml inventory.yml
+#
+# Required groups (defaults). Override names via group_vars:
+#   kafka_controller_hosts / kafka_broker_hosts
+# Sizing enforced by 01_validate_vars:
+# - kafka_controllers  (odd count >= 3)
+# - kafka_brokers      (>= 3)
+#
+# Every host needs a stable unique kafka_node_id:
+# - controllers: 1..kafka_controller_node_id_max (default 99)
+# - brokers: >= kafka_broker_node_id_base (default 100)
+# Do not change IDs after KRaft storage is formatted.
+#
+# Optional parent group `kafka` nests both groups for readability.
+# Set ansible_host and hostname on every node (prefer FQDN).
+
+all:
+  children:
+    kafka:
+      children:
+        kafka_controllers:
+          hosts:
+            kafka-c1:
+              ansible_host: 192.168.1.161
+              hostname: c1.kafka.example.com
+              kafka_node_id: 1
+            kafka-c2:
+              ansible_host: 192.168.1.162
+              hostname: c2.kafka.example.com
+              kafka_node_id: 2
+            kafka-c3:
+              ansible_host: 192.168.1.163
+              hostname: c3.kafka.example.com
+              kafka_node_id: 3
+        kafka_brokers:
+          hosts:
+            kafka-b1:
+              ansible_host: 192.168.1.164
+              hostname: b1.kafka.example.com
+              kafka_node_id: 101
+            kafka-b2:
+              ansible_host: 192.168.1.165
+              hostname: b2.kafka.example.com
+              kafka_node_id: 102
+            kafka-b3:
+              ansible_host: 192.168.1.166
+              hostname: b3.kafka.example.com
+              kafka_node_id: 103

@@ -1,0 +1,112 @@
+---
+- name: Check workspace cluster ID marker on controller
+  ansible.builtin.stat:
+    path: "{{ kafka_cluster_id_workspace_marker }}"
+  delegate_to: localhost
+  become: false
+  run_once: true
+  register: kafka_cluster_id_ws_stat
+  when: (kafka_cluster_id_workspace_marker | default('') | trim | length) > 0
+
+- name: Read workspace cluster ID marker
+  ansible.builtin.slurp:
+    src: "{{ kafka_cluster_id_workspace_marker }}"
+  delegate_to: localhost
+  become: false
+  run_once: true
+  register: kafka_cluster_id_ws_slurp
+  when:
+    - (kafka_cluster_id_workspace_marker | default('') | trim | length) > 0
+    - kafka_cluster_id_ws_stat.stat.exists | default(false)
+
+- name: Check local cluster ID marker on seed controller
+  run_once: true
+  ansible.builtin.stat:
+    path: "{{ kafka_cluster_id_marker }}"
+  register: kafka_cluster_id_seed_stat
+
+- name: Read local cluster ID marker on seed controller
+  run_once: true
+  ansible.builtin.slurp:
+    src: "{{ kafka_cluster_id_marker }}"
+  register: kafka_cluster_id_seed_slurp
+  when: kafka_cluster_id_seed_stat.stat.exists | default(false)
+
+- name: Generate Kafka cluster ID when missing
+  run_once: true
+  when: >-
+    not (
+      (kafka_cluster_id_ws_stat.stat.exists | default(false))
+      or (kafka_cluster_id_seed_stat.stat.exists | default(false))
+    )
+  block:
+    - name: Run kafka-storage random-uuid
+      ansible.builtin.command:
+        argv:
+          - "{{ kafka_current_link }}/bin/kafka-storage.sh"
+          - random-uuid
+      register: kafka_cluster_id_generated
+      changed_when: true
+
+    - name: Set generated cluster ID on seed
+      ansible.builtin.set_fact:
+        kafka_cluster_id: "{{ kafka_cluster_id_generated.stdout | trim }}"
+
+- name: Resolve Kafka cluster ID on seed
+  run_once: true
+  ansible.builtin.set_fact:
+    kafka_cluster_id: >-
+      {{
+        (kafka_cluster_id | default(''))
+        if (kafka_cluster_id | default('') | length > 0)
+        else (
+          (kafka_cluster_id_ws_slurp.content | default('') | b64decode | trim)
+          if (kafka_cluster_id_ws_stat.stat.exists | default(false))
+          else (kafka_cluster_id_seed_slurp.content | default('') | b64decode | trim)
+        )
+      }}
+
+- name: Require Kafka cluster ID on seed
+  run_once: true
+  ansible.builtin.assert:
+    that:
+      - kafka_cluster_id is defined
+      - kafka_cluster_id | length > 0
+    fail_msg: Failed to resolve kafka_cluster_id for KRaft format.
+
+- name: Persist cluster ID in workspace cache
+  when: (kafka_cluster_id_workspace_marker | default('') | trim | length) > 0
+  block:
+    - name: Ensure workspace Kafka cache directory
+      ansible.builtin.file:
+        path: "{{ kafka_cluster_id_workspace_marker | dirname }}"
+        state: directory
+        mode: "0750"
+      delegate_to: localhost
+      become: false
+      run_once: true
+
+    - name: Write workspace cluster ID marker
+      ansible.builtin.copy:
+        dest: "{{ kafka_cluster_id_workspace_marker }}"
+        content: "{{ kafka_cluster_id }}\n"
+        mode: "0640"
+      delegate_to: localhost
+      become: false
+      run_once: true
+
+- name: Publish cluster ID to all Kafka hosts
+  ansible.builtin.set_fact:
+    kafka_cluster_id: "{{ hostvars[groups[kafka_controller_hosts] | sort | first]['kafka_cluster_id'] }}"
+  delegate_to: "{{ item }}"
+  delegate_facts: true
+  loop: "{{ groups[kafka_controller_hosts] + groups[kafka_broker_hosts] }}"
+  run_once: true
+
+- name: Persist cluster ID on this node
+  ansible.builtin.copy:
+    dest: "{{ kafka_cluster_id_marker }}"
+    content: "{{ kafka_cluster_id }}\n"
+    owner: "{{ kafka_user }}"
+    group: "{{ kafka_group }}"
+    mode: "0640"

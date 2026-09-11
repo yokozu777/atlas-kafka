@@ -1,0 +1,132 @@
+---
+- name: Resolve controller node.id from inventory
+  ansible.builtin.set_fact:
+    kafka_node_id: "{{ hostvars[inventory_hostname]['kafka_node_id'] | int }}"
+
+- name: Collect controller voter endpoints
+  run_once: true
+  ansible.builtin.set_fact:
+    kafka_controller_voter_pairs: []
+
+- name: Append controller voter endpoint
+  run_once: true
+  ansible.builtin.set_fact:
+    kafka_controller_voter_pairs: >-
+      {{
+        kafka_controller_voter_pairs
+        + [
+          (hostvars[item]['kafka_node_id'] | string)
+          ~ '@'
+          ~ (hostvars[item]['ansible_host'] | default(item))
+          ~ ':'
+          ~ (kafka_controller_port | string)
+        ]
+      }}
+  loop: "{{ groups[kafka_controller_hosts] | sort }}"
+
+- name: Publish controller quorum voters on seed
+  run_once: true
+  ansible.builtin.set_fact:
+    kafka_controller_quorum_voters: "{{ kafka_controller_voter_pairs | join(',') }}"
+
+- name: Publish quorum voters fact to all controller hosts
+  ansible.builtin.set_fact:
+    kafka_controller_quorum_voters: "{{ hostvars[groups[kafka_controller_hosts] | sort | first]['kafka_controller_quorum_voters'] }}"
+  delegate_to: "{{ item }}"
+  delegate_facts: true
+  loop: "{{ groups[kafka_controller_hosts] }}"
+  run_once: true
+
+- name: Create controller metadata log directory
+  ansible.builtin.file:
+    path: "{{ kafka_controller_metadata_log_dir }}"
+    state: directory
+    owner: "{{ kafka_user }}"
+    group: "{{ kafka_group }}"
+    mode: "0750"
+
+- name: Deploy controller properties
+  ansible.builtin.template:
+    src: controller.properties.j2
+    dest: "{{ kafka_controller_properties }}"
+    owner: "{{ kafka_user }}"
+    group: "{{ kafka_group }}"
+    mode: "0640"
+  notify: Restart Kafka
+
+- name: Ensure cluster ID exists
+  ansible.builtin.import_tasks: ensure_cluster_id.yaml
+
+- name: Format controller storage when needed
+  ansible.builtin.import_tasks: format_storage.yaml
+
+- name: Deploy Kafka systemd unit for controller
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/{{ kafka_service_name }}.service
+    mode: "0644"
+    content: |
+      [Unit]
+      Description=Apache Kafka KRaft Controller
+      After=network-online.target
+      Wants=network-online.target
+
+      [Service]
+      Type=simple
+      User={{ kafka_user }}
+      Group={{ kafka_group }}
+      Environment="KAFKA_HEAP_OPTS={{ kafka_heap_opts }}"
+      Environment="KAFKA_JVM_PERFORMANCE_OPTS={{ kafka_jvm_performance_opts }}"
+      Environment="LOG_DIR={{ kafka_log_dir }}"
+      ExecStart={{ kafka_current_link }}/bin/kafka-server-start.sh {{ kafka_controller_properties }}
+      ExecStop={{ kafka_current_link }}/bin/kafka-server-stop.sh
+      Restart=on-failure
+      RestartSec=5
+      LimitNOFILE=1000000
+      TimeoutStopSec=120
+
+      [Install]
+      WantedBy=multi-user.target
+  notify: Restart Kafka
+
+- name: Enable and start Kafka controller
+  ansible.builtin.systemd:
+    name: "{{ kafka_service_name }}"
+    enabled: true
+    daemon_reload: true
+    state: started
+
+- name: Wait until Kafka controller process is active
+  ansible.builtin.command:
+    argv:
+      - systemctl
+      - is-active
+      - "{{ kafka_service_name }}"
+  register: kafka_controller_active_probe
+  until: kafka_controller_active_probe.stdout | trim == 'active'
+  retries: "{{ kafka_controller_service_retries | int }}"
+  delay: "{{ kafka_controller_service_delay | int }}"
+  changed_when: false
+
+- name: Wait until KRaft metadata quorum is described from seed controller
+  run_once: true
+  ansible.builtin.command:
+    argv:
+      - "{{ kafka_current_link }}/bin/kafka-metadata-quorum.sh"
+      - --bootstrap-controller
+      - "{{ (ansible_host | default(inventory_hostname)) ~ ':' ~ (kafka_controller_port | string) }}"
+      - describe
+      - --status
+  register: kafka_metadata_quorum_status
+  until: kafka_metadata_quorum_status.rc == 0
+  retries: "{{ kafka_controller_service_retries | int }}"
+  delay: "{{ kafka_controller_service_delay | int }}"
+  changed_when: false
+
+- name: Assert metadata quorum report is non-empty
+  run_once: true
+  ansible.builtin.assert:
+    that:
+      - kafka_metadata_quorum_status.stdout | default('') | length > 0
+    fail_msg: >-
+      kafka-metadata-quorum describe --status returned empty output on
+      {{ inventory_hostname }}. Controllers may not have formed a quorum yet.

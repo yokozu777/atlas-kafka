@@ -1,0 +1,11 @@
+---
+kafka_broker_hosts: kafka_brokers
+
+kafka_install_root: /opt/kafka
+kafka_current_link: "{{ kafka_install_root }}/current"
+kafka_broker_port: 9092
+kafka_verify_topic: atlas_kafka_verify
+kafka_verify_message: atlas-kafka-verify-ok
+kafka_verify_timeout_ms: 30000
+kafka_verify_retries: 20
+kafka_verify_delay: 3

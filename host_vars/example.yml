@@ -1,0 +1,8 @@
+# Optional per-host overrides.
+# Copy to host_vars/<inventory_hostname>.yml (host_vars/* is gitignored except examples).
+#
+# hostname: c1.kafka.example.com
+# ansible_user: localuser
+# ansible_port: 22
+# kafka_node_id: 1                 # must stay stable after KRaft format
+# kafka_heap_opts: "-Xms2G -Xmx2G" # per-node heap override

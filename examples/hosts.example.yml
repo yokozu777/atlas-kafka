@@ -1,0 +1,37 @@
+# Deprecated path — use the repo-root example instead:
+#   cp inventory-example.yml inventory.yml
+#
+# This file is kept as a short alias of the same group layout for older docs/links.
+
+all:
+  children:
+    kafka:
+      children:
+        kafka_controllers:
+          hosts:
+            kafka-c1:
+              ansible_host: 192.168.1.161
+              hostname: c1.kafka.example.com
+              kafka_node_id: 1
+            kafka-c2:
+              ansible_host: 192.168.1.162
+              hostname: c2.kafka.example.com
+              kafka_node_id: 2
+            kafka-c3:
+              ansible_host: 192.168.1.163
+              hostname: c3.kafka.example.com
+              kafka_node_id: 3
+        kafka_brokers:
+          hosts:
+            kafka-b1:
+              ansible_host: 192.168.1.164
+              hostname: b1.kafka.example.com
+              kafka_node_id: 101
+            kafka-b2:
+              ansible_host: 192.168.1.165
+              hostname: b2.kafka.example.com
+              kafka_node_id: 102
+            kafka-b3:
+              ansible_host: 192.168.1.166
+              hostname: b3.kafka.example.com
+              kafka_node_id: 103

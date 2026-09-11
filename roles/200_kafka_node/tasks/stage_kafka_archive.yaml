@@ -1,0 +1,28 @@
+---
+- name: Ensure controller staging directory for Kafka archive
+  ansible.builtin.file:
+    path: "{{ kafka_controller_staging_dir }}"
+    state: directory
+    mode: "0750"
+  delegate_to: localhost
+  become: false
+  run_once: true
+
+- name: Stat Kafka archive on controller
+  ansible.builtin.stat:
+    path: "{{ kafka_controller_archive_path }}"
+  delegate_to: localhost
+  become: false
+  run_once: true
+  register: kafka_controller_archive_stat
+
+- name: Download Kafka archive on Ansible controller
+  ansible.builtin.get_url:
+    url: "{{ kafka_download_effective_url }}"
+    dest: "{{ kafka_controller_archive_path }}"
+    mode: "0644"
+    timeout: "{{ kafka_download_timeout | int }}"
+  delegate_to: localhost
+  become: false
+  run_once: true
+  when: not (kafka_controller_archive_stat.stat.exists | default(false))

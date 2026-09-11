@@ -1,0 +1,32 @@
+---
+- name: Check controller meta.properties
+  ansible.builtin.stat:
+    path: "{{ kafka_controller_metadata_log_dir }}/meta.properties"
+  register: kafka_controller_meta_stat
+
+- name: Validate controller KRaft meta.properties when present
+  when: kafka_controller_meta_stat.stat.exists | default(false)
+  ansible.builtin.include_role:
+    name: 200_kafka_node
+    tasks_from: validate_kraft_meta.yaml
+  vars:
+    kafka_kraft_meta_properties_path: "{{ kafka_controller_metadata_log_dir }}/meta.properties"
+
+- name: Format controller KRaft storage
+  ansible.builtin.command:
+    argv:
+      - "{{ kafka_current_link }}/bin/kafka-storage.sh"
+      - format
+      - --ignore-formatted
+      - -t
+      - "{{ kafka_cluster_id }}"
+      - -c
+      - "{{ kafka_controller_properties }}"
+  become: true
+  become_user: "{{ kafka_user }}"
+  register: kafka_controller_format
+  changed_when: >-
+    'Formatting' in (kafka_controller_format.stdout | default(''))
+    or 'Formatting' in (kafka_controller_format.stderr | default(''))
+    or not (kafka_controller_meta_stat.stat.exists | default(false))
+  when: not (kafka_controller_meta_stat.stat.exists | default(false))

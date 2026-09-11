@@ -1,0 +1,27 @@
+#jinja2: trim_blocks: True, lstrip_blocks: True
+process.roles=broker
+node.id={{ kafka_node_id }}
+
+controller.quorum.voters={{ kafka_controller_quorum_voters }}
+controller.listener.names=CONTROLLER
+
+listeners=PLAINTEXT://0.0.0.0:{{ kafka_broker_port }}
+advertised.listeners=PLAINTEXT://{{ kafka_broker_advertised_host }}:{{ kafka_broker_port }}
+inter.broker.listener.name=PLAINTEXT
+listener.security.protocol.map=CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+
+log.dirs={{ kafka_broker_log_dirs }}
+num.network.threads=3
+num.io.threads=8
+socket.send.buffer.bytes=102400
+socket.receive.buffer.bytes=102400
+socket.request.max.bytes=104857600
+num.recovery.threads.per.data.dir=1
+offsets.topic.replication.factor={{ [groups[kafka_broker_hosts] | length, 3] | min }}
+transaction.state.log.replication.factor={{ [groups[kafka_broker_hosts] | length, 3] | min }}
+transaction.state.log.min.isr={{ [groups[kafka_broker_hosts] | length, 2] | min }}
+log.retention.hours=168
+log.segment.bytes=1073741824
+log.retention.check.interval.ms=300000
+group.initial.rebalance.delay.ms=0
+initial.broker.registration.timeout.ms=120000

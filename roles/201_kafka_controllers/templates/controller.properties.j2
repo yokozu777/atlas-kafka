@@ -1,0 +1,18 @@
+#jinja2: trim_blocks: True, lstrip_blocks: True
+process.roles=controller
+node.id={{ kafka_node_id }}
+controller.quorum.voters={{ kafka_controller_quorum_voters }}
+
+listeners=CONTROLLER://0.0.0.0:{{ kafka_controller_port }}
+advertised.listeners=CONTROLLER://{{ ansible_host | default(inventory_hostname) }}:{{ kafka_controller_port }}
+controller.listener.names=CONTROLLER
+listener.security.protocol.map=CONTROLLER:PLAINTEXT
+
+log.dirs={{ kafka_controller_metadata_log_dir }}
+num.network.threads=3
+num.io.threads=8
+socket.send.buffer.bytes=102400
+socket.receive.buffer.bytes=102400
+socket.request.max.bytes=104857600
+num.partitions={{ [groups[kafka_broker_hosts] | length, 3] | min }}
+log.retention.check.interval.ms=300000

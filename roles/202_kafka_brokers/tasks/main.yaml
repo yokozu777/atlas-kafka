@@ -1,0 +1,236 @@
+---
+- name: Resolve broker node.id from inventory
+  ansible.builtin.set_fact:
+    kafka_node_id: "{{ hostvars[inventory_hostname]['kafka_node_id'] | int }}"
+    kafka_broker_advertised_host: "{{ ansible_host | default(inventory_hostname) }}"
+
+- name: Collect controller voter endpoints for brokers
+  run_once: true
+  ansible.builtin.set_fact:
+    kafka_controller_voter_pairs: []
+
+- name: Append controller voter endpoint for brokers
+  run_once: true
+  ansible.builtin.set_fact:
+    kafka_controller_voter_pairs: >-
+      {{
+        kafka_controller_voter_pairs
+        + [
+          (hostvars[item]['kafka_node_id'] | string)
+          ~ '@'
+          ~ (hostvars[item]['ansible_host'] | default(item))
+          ~ ':'
+          ~ (kafka_controller_port | string)
+        ]
+      }}
+  loop: "{{ groups[kafka_controller_hosts] | sort }}"
+
+- name: Publish controller quorum voters on seed broker
+  run_once: true
+  ansible.builtin.set_fact:
+    kafka_controller_quorum_voters: "{{ kafka_controller_voter_pairs | join(',') }}"
+
+- name: Publish quorum voters fact to all broker hosts
+  ansible.builtin.set_fact:
+    kafka_controller_quorum_voters: "{{ hostvars[groups[kafka_broker_hosts] | sort | first]['kafka_controller_quorum_voters'] }}"
+  delegate_to: "{{ item }}"
+  delegate_facts: true
+  loop: "{{ groups[kafka_broker_hosts] }}"
+  run_once: true
+
+- name: Require cluster ID on brokers
+  block:
+    - name: Stat workspace cluster ID marker for brokers
+      ansible.builtin.stat:
+        path: "{{ kafka_cluster_id_workspace_marker }}"
+      delegate_to: localhost
+      become: false
+      run_once: true
+      register: kafka_broker_ws_cluster_id_stat
+      when:
+        - kafka_cluster_id is not defined or (kafka_cluster_id | default('') | length == 0)
+        - (kafka_cluster_id_workspace_marker | default('') | trim | length) > 0
+
+    - name: Read workspace cluster ID marker for brokers
+      ansible.builtin.slurp:
+        src: "{{ kafka_cluster_id_workspace_marker }}"
+      delegate_to: localhost
+      become: false
+      run_once: true
+      register: kafka_broker_ws_cluster_id_slurp
+      when:
+        - kafka_cluster_id is not defined or (kafka_cluster_id | default('') | length == 0)
+        - (kafka_cluster_id_workspace_marker | default('') | trim | length) > 0
+        - kafka_broker_ws_cluster_id_stat.stat.exists | default(false)
+
+    - name: Publish workspace cluster ID to all brokers
+      ansible.builtin.set_fact:
+        kafka_cluster_id: "{{ kafka_broker_ws_cluster_id_slurp.content | b64decode | trim }}"
+      when:
+        - kafka_cluster_id is not defined or (kafka_cluster_id | default('') | length == 0)
+        - kafka_broker_ws_cluster_id_stat.stat.exists | default(false)
+        - (kafka_broker_ws_cluster_id_slurp.content | default('') | length > 0)
+
+    - name: Stat cluster ID marker on broker
+      ansible.builtin.stat:
+        path: "{{ kafka_cluster_id_marker }}"
+      register: kafka_broker_cluster_id_stat
+      when: kafka_cluster_id is not defined or (kafka_cluster_id | default('') | length == 0)
+
+    - name: Load cluster ID from marker on broker
+      ansible.builtin.slurp:
+        src: "{{ kafka_cluster_id_marker }}"
+      register: kafka_broker_cluster_id_slurp
+      when:
+        - kafka_cluster_id is not defined or (kafka_cluster_id | default('') | length == 0)
+        - kafka_broker_cluster_id_stat.stat.exists | default(false)
+
+    - name: Set kafka_cluster_id from local marker
+      ansible.builtin.set_fact:
+        kafka_cluster_id: "{{ kafka_broker_cluster_id_slurp.content | b64decode | trim }}"
+      when:
+        - kafka_cluster_id is not defined or (kafka_cluster_id | default('') | length == 0)
+        - kafka_broker_cluster_id_stat.stat.exists | default(false)
+
+    - name: Assert kafka_cluster_id present
+      ansible.builtin.assert:
+        that:
+          - kafka_cluster_id is defined
+          - kafka_cluster_id | length > 0
+        fail_msg: >-
+          kafka_cluster_id is missing on broker {{ inventory_hostname }}.
+          Expected workspace marker {{ kafka_cluster_id_workspace_marker }}
+          or local {{ kafka_cluster_id_marker }}. Re-run tags 201_kafka_controllers.
+
+- name: Persist cluster ID on broker
+  ansible.builtin.copy:
+    dest: "{{ kafka_cluster_id_marker }}"
+    content: "{{ kafka_cluster_id }}\n"
+    owner: "{{ kafka_user }}"
+    group: "{{ kafka_group }}"
+    mode: "0640"
+
+- name: Create broker log directory
+  ansible.builtin.file:
+    path: "{{ kafka_broker_log_dirs }}"
+    state: directory
+    owner: "{{ kafka_user }}"
+    group: "{{ kafka_group }}"
+    mode: "0750"
+
+- name: Deploy broker properties
+  ansible.builtin.template:
+    src: broker.properties.j2
+    dest: "{{ kafka_broker_properties }}"
+    owner: "{{ kafka_user }}"
+    group: "{{ kafka_group }}"
+    mode: "0640"
+  notify: Restart Kafka
+
+- name: Check broker meta.properties
+  ansible.builtin.stat:
+    path: "{{ kafka_broker_log_dirs }}/meta.properties"
+  register: kafka_broker_meta_stat
+
+- name: Validate broker KRaft meta.properties when present
+  when: kafka_broker_meta_stat.stat.exists | default(false)
+  ansible.builtin.include_role:
+    name: 200_kafka_node
+    tasks_from: validate_kraft_meta.yaml
+  vars:
+    kafka_kraft_meta_properties_path: "{{ kafka_broker_log_dirs }}/meta.properties"
+
+- name: Format broker KRaft storage
+  ansible.builtin.command:
+    argv:
+      - "{{ kafka_current_link }}/bin/kafka-storage.sh"
+      - format
+      - --ignore-formatted
+      - -t
+      - "{{ kafka_cluster_id }}"
+      - -c
+      - "{{ kafka_broker_properties }}"
+  become: true
+  become_user: "{{ kafka_user }}"
+  register: kafka_broker_format
+  changed_when: >-
+    'Formatting' in (kafka_broker_format.stdout | default(''))
+    or 'Formatting' in (kafka_broker_format.stderr | default(''))
+    or not (kafka_broker_meta_stat.stat.exists | default(false))
+  when: not (kafka_broker_meta_stat.stat.exists | default(false))
+
+- name: Deploy Kafka systemd unit for broker
+  ansible.builtin.copy:
+    dest: /etc/systemd/system/{{ kafka_service_name }}.service
+    mode: "0644"
+    content: |
+      [Unit]
+      Description=Apache Kafka KRaft Broker
+      After=network-online.target
+      Wants=network-online.target
+
+      [Service]
+      Type=simple
+      User={{ kafka_user }}
+      Group={{ kafka_group }}
+      Environment="KAFKA_HEAP_OPTS={{ kafka_heap_opts }}"
+      Environment="KAFKA_JVM_PERFORMANCE_OPTS={{ kafka_jvm_performance_opts }}"
+      Environment="LOG_DIR={{ kafka_log_dir }}"
+      ExecStart={{ kafka_current_link }}/bin/kafka-server-start.sh {{ kafka_broker_properties }}
+      ExecStop={{ kafka_current_link }}/bin/kafka-server-stop.sh
+      Restart=on-failure
+      RestartSec=5
+      LimitNOFILE=1000000
+      TimeoutStopSec=120
+
+      [Install]
+      WantedBy=multi-user.target
+  notify: Restart Kafka
+
+- name: Enable and start Kafka broker
+  ansible.builtin.systemd:
+    name: "{{ kafka_service_name }}"
+    enabled: true
+    daemon_reload: true
+    state: started
+
+- name: Flush handlers before broker readiness checks
+  ansible.builtin.meta: flush_handlers
+
+- name: Wait until Kafka broker process is active
+  ansible.builtin.command:
+    argv:
+      - systemctl
+      - is-active
+      - "{{ kafka_service_name }}"
+  register: kafka_broker_active_probe
+  until: kafka_broker_active_probe.stdout | trim == 'active'
+  retries: "{{ kafka_broker_service_retries | int }}"
+  delay: "{{ kafka_broker_service_delay | int }}"
+  changed_when: false
+
+- name: Wait until Kafka broker listens on PLAINTEXT port
+  ansible.builtin.wait_for:
+    host: 127.0.0.1
+    port: "{{ kafka_broker_port | int }}"
+    delay: "{{ kafka_broker_service_delay | int }}"
+    timeout: "{{ (kafka_broker_service_retries | int) * (kafka_broker_service_delay | int) }}"
+    state: started
+
+- name: Wait until broker is registered and reports api-versions
+  vars:
+    _kafka_broker_id_pattern: '(?m)^\S+:\d+ \(id: {{ kafka_node_id | string }}(?:\s|rack:)'
+  ansible.builtin.command:
+    argv:
+      - "{{ kafka_current_link }}/bin/kafka-broker-api-versions.sh"
+      - --bootstrap-server
+      - "{{ kafka_broker_advertised_host }}:{{ kafka_broker_port }}"
+  register: kafka_broker_registration_probe
+  until: >-
+    kafka_broker_registration_probe.rc == 0
+    and (
+      (kafka_broker_registration_probe.stdout | regex_findall(_kafka_broker_id_pattern) | length) > 0
+    )
+  retries: "{{ kafka_broker_service_retries | int }}"
+  delay: "{{ kafka_broker_service_delay | int }}"
+  changed_when: false

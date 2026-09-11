@@ -1,0 +1,46 @@
+---
+- name: Read KRaft meta.properties
+  ansible.builtin.slurp:
+    src: "{{ kafka_kraft_meta_properties_path }}"
+  register: kafka_kraft_meta_slurp
+
+- name: Parse KRaft meta.properties fields
+  ansible.builtin.set_fact:
+    kafka_kraft_meta_cluster_id: >-
+      {{
+        (kafka_kraft_meta_slurp.content | b64decode)
+        | regex_findall('(?m)^cluster\.id=(.*)$')
+        | first
+        | default('', true)
+        | trim
+      }}
+    kafka_kraft_meta_node_id: >-
+      {{
+        (kafka_kraft_meta_slurp.content | b64decode)
+        | regex_findall('(?m)^node\.id=(.*)$')
+        | first
+        | default('', true)
+        | trim
+      }}
+
+- name: Assert KRaft meta.properties cluster.id matches expected
+  ansible.builtin.assert:
+    that:
+      - kafka_kraft_meta_cluster_id | length > 0
+      - kafka_kraft_meta_cluster_id == kafka_cluster_id
+    fail_msg: >-
+      KRaft storage drift on {{ inventory_hostname }}:
+      meta.properties cluster.id={{ kafka_kraft_meta_cluster_id | default('MISSING') }}
+      but expected {{ kafka_cluster_id }}.
+      Wipe {{ kafka_kraft_meta_properties_path | dirname }} or fix inventory before continuing.
+
+- name: Assert KRaft meta.properties node.id matches inventory
+  ansible.builtin.assert:
+    that:
+      - kafka_kraft_meta_node_id | length > 0
+      - kafka_kraft_meta_node_id | int == kafka_node_id | int
+    fail_msg: >-
+      KRaft storage drift on {{ inventory_hostname }}:
+      meta.properties node.id={{ kafka_kraft_meta_node_id | default('MISSING') }}
+      but inventory kafka_node_id={{ kafka_node_id }}.
+      Reformat storage or restore the original node.id mapping.

@@ -1,0 +1,65 @@
+# atlas-kafka — variable catalog for standalone runs
+# ==================================================
+# Role defaults under roles/*/defaults/main.yml remain the SoT for deep tunables.
+# This file is the documented operator surface: set REQUIRED, tweak OPTIONAL.
+#
+# Secrets: see group_vars/all/atlas-kafka.secrets.yml (Vault-friendly; empty for plaintext).
+# Standalone alternative: EXTRA_VARS_FILE=examples/secrets.example.yml
+# Lab v1 is plaintext (no AUTH passwords).
+# Workspace dirs are created by role 00_ensure_workspace (tag always).
+
+# --------------------------------------------
+# REQUIRED — must be set for a real deploy
+# --------------------------------------------
+
+# Inventory group names (single group each; must exist in inventory)
+kafka_controller_hosts: kafka_controllers
+kafka_broker_hosts: kafka_brokers
+
+# Controller workspace (role 00_ensure_workspace; Kafka tarball / cluster.id cache)
+cluster_domain: kafka.example.com
+cluster_workspace_id: "{{ lookup('ansible.builtin.env', 'CLUSTER_WORKSPACE_ID') | default(cluster_domain, true) }}"
+cluster_workspace_parent: ./workspace
+cluster_workspace_root: "{{ cluster_workspace_parent }}/{{ cluster_workspace_id }}"
+
+# SSH connection user (override per host in inventory / host_vars if needed)
+ansible_user: localuser
+
+# Cluster identity / ports
+kafka_version: "4.3.1"
+kafka_scala_version: "2.13"
+kafka_broker_port: 9092
+kafka_controller_port: 9093
+# Lab v1: plaintext only
+kafka_security_mode: plaintext
+
+# --------------------------------------------
+# OPTIONAL — safe defaults (override as needed)
+# --------------------------------------------
+
+# --- Node ID ranges (must match inventory kafka_node_id) ---
+kafka_controller_node_id_max: 99
+kafka_broker_node_id_base: 100
+
+# --- Install / runtime (200) ---
+kafka_heap_opts: "-Xms1G -Xmx1G"
+kafka_jvm_performance_opts: "-server -XX:+UseG1GC -XX:MaxGCPauseMillis=20"
+# Optional full URL override (HTTP(S) mirror); empty = Apache downloads
+kafka_download_mirror_url: ""
+kafka_download_url: ""
+kafka_download_timeout: 600
+
+# --- Controllers (201) ---
+kafka_controller_service_retries: 30
+kafka_controller_service_delay: 2
+
+# --- Brokers (202) ---
+kafka_broker_service_retries: 30
+kafka_broker_service_delay: 2
+
+# --- Verify (203) ---
+kafka_verify_topic: atlas_kafka_verify
+kafka_verify_message: atlas-kafka-verify-ok
+kafka_verify_timeout_ms: 30000
+kafka_verify_retries: 20
+kafka_verify_delay: 3

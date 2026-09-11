@@ -1,0 +1,173 @@
+---
+- name: Collect verify broker endpoints
+  run_once: true
+  ansible.builtin.set_fact:
+    kafka_verify_bootstrap_list: []
+
+- name: Append verify broker endpoint
+  run_once: true
+  ansible.builtin.set_fact:
+    kafka_verify_bootstrap_list: >-
+      {{
+        kafka_verify_bootstrap_list
+        + [
+          (hostvars[item]['ansible_host'] | default(item))
+          ~ ':'
+          ~ (kafka_broker_port | string)
+        ]
+      }}
+  loop: "{{ groups[kafka_broker_hosts] | sort }}"
+
+- name: Set verify bootstrap string
+  run_once: true
+  ansible.builtin.set_fact:
+    kafka_verify_bootstrap: "{{ kafka_verify_bootstrap_list | join(',') }}"
+
+- name: Build unique verify run token
+  run_once: true
+  ansible.builtin.set_fact:
+    kafka_verify_run_id: "{{ lookup('pipe', 'date +%s') }}-{{ 10000000 | random | string }}"
+
+- name: Build unique verify message
+  run_once: true
+  ansible.builtin.set_fact:
+    kafka_verify_message: "atlas-kafka-verify-{{ kafka_verify_run_id }}"
+
+- name: Wait until brokers report via kafka-broker-api-versions
+  run_once: true
+  ansible.builtin.command:
+    argv:
+      - "{{ kafka_current_link }}/bin/kafka-broker-api-versions.sh"
+      - --bootstrap-server
+      - "{{ kafka_verify_bootstrap }}"
+  register: kafka_verify_api_versions
+  until: kafka_verify_api_versions.rc == 0
+  retries: "{{ kafka_verify_retries | int }}"
+  delay: "{{ kafka_verify_delay | int }}"
+  changed_when: false
+
+- name: Parse broker ids from api-versions output
+  run_once: true
+  vars:
+    _kafka_verify_broker_id_pattern: '(?m)^\S+:\d+ \(id: (\d+)'
+  ansible.builtin.set_fact:
+    kafka_verify_reported_broker_ids: >-
+      {{
+        kafka_verify_api_versions.stdout
+        | regex_findall(_kafka_verify_broker_id_pattern)
+        | map('int')
+        | unique
+        | list
+        | sort
+      }}
+
+- name: Assert expected broker count in API versions output
+  run_once: true
+  ansible.builtin.assert:
+    that:
+      - kafka_verify_reported_broker_ids | length == (groups[kafka_broker_hosts] | length)
+    fail_msg: >-
+      Expected {{ groups[kafka_broker_hosts] | length }} distinct brokers in
+      kafka-broker-api-versions output. Got broker ids={{ kafka_verify_reported_broker_ids }}.
+      stdout={{ kafka_verify_api_versions.stdout | default('') }}
+
+- name: Remove stale verify topic if present
+  run_once: true
+  ansible.builtin.command:
+    argv:
+      - "{{ kafka_current_link }}/bin/kafka-topics.sh"
+      - --bootstrap-server
+      - "{{ kafka_verify_bootstrap }}"
+      - --delete
+      - --topic
+      - "{{ kafka_verify_topic }}"
+  register: kafka_verify_topic_delete
+  changed_when: "'Marked topic' in (kafka_verify_topic_delete.stdout | default(''))"
+  failed_when: false
+
+- name: Wait briefly after verify topic delete
+  run_once: true
+  ansible.builtin.pause:
+    seconds: 2
+  when: kafka_verify_topic_delete is changed
+
+- name: Create verify topic
+  run_once: true
+  ansible.builtin.command:
+    argv:
+      - "{{ kafka_current_link }}/bin/kafka-topics.sh"
+      - --bootstrap-server
+      - "{{ kafka_verify_bootstrap }}"
+      - --create
+      - --if-not-exists
+      - --topic
+      - "{{ kafka_verify_topic }}"
+      - --partitions
+      - "1"
+      - --replication-factor
+      - "{{ [groups[kafka_broker_hosts] | length, 3] | min | string }}"
+  register: kafka_verify_topic_create
+  changed_when: "'Created topic' in (kafka_verify_topic_create.stdout | default(''))"
+
+- name: Produce verify message
+  run_once: true
+  ansible.builtin.shell: |
+    set -euo pipefail
+    printf '%s\n' "{{ kafka_verify_message }}" | \
+      "{{ kafka_current_link }}/bin/kafka-console-producer.sh" \
+        --bootstrap-server "{{ kafka_verify_bootstrap }}" \
+        --topic "{{ kafka_verify_topic }}"
+  args:
+    executable: /bin/bash
+  register: kafka_verify_produce
+  changed_when: true
+
+- name: Wait briefly for verify message replication
+  run_once: true
+  ansible.builtin.pause:
+    seconds: 2
+
+- name: Consume verify message from fresh topic
+  run_once: true
+  ansible.builtin.command:
+    argv:
+      - "{{ kafka_current_link }}/bin/kafka-console-consumer.sh"
+      - --bootstrap-server
+      - "{{ kafka_verify_bootstrap }}"
+      - --topic
+      - "{{ kafka_verify_topic }}"
+      - --from-beginning
+      - --max-messages
+      - "1"
+      - --timeout-ms
+      - "{{ kafka_verify_timeout_ms | string }}"
+  register: kafka_verify_consume
+  changed_when: false
+  failed_when: >-
+    kafka_verify_consume.rc != 0
+    or (kafka_verify_message not in (kafka_verify_consume.stdout | default('')))
+
+- name: Delete verify topic
+  run_once: true
+  ansible.builtin.command:
+    argv:
+      - "{{ kafka_current_link }}/bin/kafka-topics.sh"
+      - --bootstrap-server
+      - "{{ kafka_verify_bootstrap }}"
+      - --delete
+      - --topic
+      - "{{ kafka_verify_topic }}"
+  register: kafka_verify_topic_cleanup
+  changed_when: false
+  failed_when: false
+
+- name: Assert Kafka verify produce/consume succeeded
+  run_once: true
+  ansible.builtin.assert:
+    that:
+      - kafka_verify_message in (kafka_verify_consume.stdout | default(''))
+    fail_msg: >-
+      Kafka smoke verify failed. Expected message {{ kafka_verify_message }} in consume output.
+      produce_rc={{ kafka_verify_produce.rc | default('') }},
+      consume_rc={{ kafka_verify_consume.rc | default('') }},
+      consume_stdout={{ kafka_verify_consume.stdout | default('') }}

@@ -1,0 +1,7 @@
+---
+# Controller workspace contract (play 00_ensure_workspace on localhost).
+# Override via group_vars/all/atlas-kafka.yml or env CLUSTER_WORKSPACE_ID / CLUSTER_WORKSPACE_ROOT.
+cluster_domain: kafka.example.com
+cluster_workspace_id: "{{ lookup('ansible.builtin.env', 'CLUSTER_WORKSPACE_ID') | default(cluster_domain, true) }}"
+cluster_workspace_parent: ./workspace
+cluster_workspace_root: "{{ cluster_workspace_parent }}/{{ cluster_workspace_id }}"

@@ -1,0 +1,53 @@
+---
+# Kafka KRaft cluster (atlas-kafka) — scheme B
+#
+# Standalone entry: inventory with groups below + required vars (see README / SECURITY.md).
+# Targeting: kafka_controller_hosts / kafka_broker_hosts (inventory group names;
+# defaults match inventory-example.yml).
+
+- hosts: localhost
+  gather_facts: false
+  tags: [00_ensure_workspace]
+  roles:
+    - role: 00_ensure_workspace
+
+- hosts: localhost
+  gather_facts: false
+  roles:
+    - role: 01_validate_vars
+      tags: 01_validate_vars
+
+- name: Install Kafka runtime on controllers and brokers
+  hosts: "{{ kafka_controller_hosts | default('kafka_controllers') }}:{{ kafka_broker_hosts | default('kafka_brokers') }}"
+  become: true
+  gather_facts: true
+  strategy: linear
+  roles:
+    - role: 200_kafka_node
+      tags: 200_kafka_node
+
+- name: Format and start KRaft controllers
+  hosts: "{{ kafka_controller_hosts | default('kafka_controllers') }}"
+  become: true
+  gather_facts: false
+  strategy: linear
+  roles:
+    - role: 201_kafka_controllers
+      tags: 201_kafka_controllers
+
+- name: Format and start Kafka brokers
+  hosts: "{{ kafka_broker_hosts | default('kafka_brokers') }}"
+  become: true
+  gather_facts: false
+  strategy: linear
+  roles:
+    - role: 202_kafka_brokers
+      tags: 202_kafka_brokers
+
+- name: Verify Kafka KRaft cluster
+  hosts: "{{ kafka_broker_hosts | default('kafka_brokers') }}"
+  become: true
+  gather_facts: false
+  roles:
+    - role: 203_kafka_verify
+      tags: 203_kafka_verify

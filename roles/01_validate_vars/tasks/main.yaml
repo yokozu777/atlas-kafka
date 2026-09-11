@@ -1,0 +1,109 @@
+---
+- name: Require Kafka inventory groups
+  ansible.builtin.assert:
+    that:
+      - groups[kafka_controller_hosts] is defined
+      - groups[kafka_controller_hosts] | length >= 3
+      - (groups[kafka_controller_hosts] | length % 2) == 1
+      - groups[kafka_broker_hosts] is defined
+      - groups[kafka_broker_hosts] | length >= 3
+    fail_msg: >-
+      inventory must define groups named by kafka_controller_hosts={{ kafka_controller_hosts }}
+      (odd count >= 3) and kafka_broker_hosts={{ kafka_broker_hosts }} (>= 3).
+      Got controllers={{ groups[kafka_controller_hosts] | default([]) | length }},
+      brokers={{ groups[kafka_broker_hosts] | default([]) | length }}
+      (defaults: kafka_controllers, kafka_brokers — see inventory-example.yml).
+
+- name: Reject legacy ZooKeeper / LB inventory for Kafka v1
+  ansible.builtin.assert:
+    that:
+      - (groups['zookeeper'] | default([])) | length == 0
+      - (groups['kafka_lbs'] | default([])) | length == 0
+    fail_msg: >-
+      atlas-kafka KRaft scheme B does not use zookeeper or kafka_lbs groups.
+      Remove them from inventory (no L4 VIP in front of Kafka protocol).
+
+- name: Require Kafka version and ports
+  ansible.builtin.assert:
+    that:
+      - kafka_version is defined
+      - kafka_version | string | length > 0
+      - kafka_scala_version is defined
+      - kafka_scala_version | string | length > 0
+      - kafka_broker_port | int > 0
+      - kafka_controller_port | int > 0
+      - (kafka_broker_port | int) != (kafka_controller_port | int)
+    fail_msg: >-
+      kafka_version, kafka_scala_version, kafka_broker_port and kafka_controller_port
+      are required; broker and controller ports must differ.
+
+- name: Require security mode
+  ansible.builtin.assert:
+    that:
+      - kafka_security_mode | default('plaintext') in ['plaintext']
+    fail_msg: >-
+      Unsupported kafka_security_mode={{ kafka_security_mode | default('') }}.
+      Lab v1 supports plaintext only (SASL/TLS later).
+
+- name: Require no host overlap between controllers and brokers
+  vars:
+    _overlap: >-
+      {{
+        (groups[kafka_controller_hosts] | sort)
+        | intersect(groups[kafka_broker_hosts] | sort)
+      }}
+  ansible.builtin.assert:
+    that:
+      - _overlap | length == 0
+    fail_msg: >-
+      Scheme B forbids combined nodes in v1. Controllers and brokers overlap:
+      {{ _overlap }}. Use dedicated hosts (or a future combined role).
+
+- name: Require stable kafka_node_id on every controller
+  ansible.builtin.assert:
+    that:
+      - hostvars[item]['kafka_node_id'] is defined
+      - hostvars[item]['kafka_node_id'] | string | length > 0
+      - hostvars[item]['kafka_node_id'] | int > 0
+      - hostvars[item]['kafka_node_id'] | int <= (kafka_controller_node_id_max | int)
+    fail_msg: >-
+      Controller {{ item }} must define kafka_node_id as a positive integer
+      <= {{ kafka_controller_node_id_max }}. Got
+      {{ hostvars[item]['kafka_node_id'] | default('MISSING') }}.
+  loop: "{{ groups[kafka_controller_hosts] | sort }}"
+
+- name: Require stable kafka_node_id on every broker
+  ansible.builtin.assert:
+    that:
+      - hostvars[item]['kafka_node_id'] is defined
+      - hostvars[item]['kafka_node_id'] | string | length > 0
+      - hostvars[item]['kafka_node_id'] | int >= (kafka_broker_node_id_base | int)
+    fail_msg: >-
+      Broker {{ item }} must define kafka_node_id as an integer
+      >= {{ kafka_broker_node_id_base }}. Got
+      {{ hostvars[item]['kafka_node_id'] | default('MISSING') }}.
+  loop: "{{ groups[kafka_broker_hosts] | sort }}"
+
+- name: Collect Kafka node IDs from inventory
+  run_once: true
+  ansible.builtin.set_fact:
+    kafka_inventory_node_ids: []
+
+- name: Append Kafka node ID from inventory host
+  run_once: true
+  ansible.builtin.set_fact:
+    kafka_inventory_node_ids: >-
+      {{
+        kafka_inventory_node_ids
+        + [hostvars[item]['kafka_node_id'] | int]
+      }}
+  loop: "{{ (groups[kafka_controller_hosts] + groups[kafka_broker_hosts]) | sort }}"
+
+- name: Require unique kafka_node_id across cluster
+  run_once: true
+  ansible.builtin.assert:
+    that:
+      - kafka_inventory_node_ids | length == (kafka_inventory_node_ids | unique | length)
+    fail_msg: >-
+      kafka_node_id must be unique across controllers and brokers.
+      Got {{ kafka_inventory_node_ids }}.

@@ -1,0 +1,8 @@
+---
+# Inventory group names used by playbook hosts: and groups[...] lookups.
+# Override in group_vars/all/atlas-kafka.yml when your inventory uses different group names.
+kafka_controller_hosts: kafka_controllers
+kafka_broker_hosts: kafka_brokers
+
+kafka_broker_node_id_base: 100
+kafka_controller_node_id_max: 99

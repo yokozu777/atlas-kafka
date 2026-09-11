@@ -1,0 +1,55 @@
+---
+kafka_version: "4.3.1"
+kafka_scala_version: "2.13"
+
+kafka_user: kafka
+kafka_group: kafka
+
+kafka_install_root: /opt/kafka
+kafka_install_dir: "{{ kafka_install_root }}/{{ kafka_version }}"
+kafka_current_link: "{{ kafka_install_root }}/current"
+kafka_conf_dir: /etc/kafka
+kafka_data_dir: /var/lib/kafka
+kafka_log_dir: /var/log/kafka
+
+kafka_broker_port: 9092
+kafka_controller_port: 9093
+kafka_security_mode: plaintext
+
+# Oracle Linux: open role ports when firewalld is running (same pattern as atlas-redis).
+kafka_firewalld_enabled: true
+
+kafka_heap_opts: "-Xms1G -Xmx1G"
+kafka_jvm_performance_opts: "-server -XX:+UseG1GC -XX:MaxGCPauseMillis=20"
+
+kafka_archive_basename: "kafka_{{ kafka_scala_version }}-{{ kafka_version }}"
+kafka_archive_filename: "{{ kafka_archive_basename }}.tgz"
+
+# Prefer HTTP(S) mirror when set; else Apache downloads.
+kafka_download_mirror_url: ""
+kafka_download_default_url: >-
+  https://downloads.apache.org/kafka/{{ kafka_version }}/{{ kafka_archive_filename }}
+kafka_download_url: ""
+kafka_download_timeout: 600
+
+# Prefer cluster workspace (env or group_vars); fallback to controller HOME.
+kafka_controller_staging_dir: >-
+  {{
+    lookup('ansible.builtin.env', 'CLUSTER_WORKSPACE_ROOT')
+    | default(cluster_workspace_root | default(lookup('ansible.builtin.env', 'HOME') | default('/tmp', true), true), true)
+  }}/.cache/atlas-kafka
+kafka_controller_archive_path: "{{ kafka_controller_staging_dir }}/{{ kafka_archive_filename }}"
+kafka_node_install_marker: "{{ kafka_install_dir }}/.install-version"
+kafka_cluster_id_marker: "{{ kafka_data_dir }}/cluster.id"
+kafka_cluster_id_workspace_marker: >-
+  {{
+    lookup('ansible.builtin.env', 'CLUSTER_WORKSPACE_ROOT')
+    | default(cluster_workspace_root | default('', true), true)
+  }}/.cache/atlas-kafka/cluster.id
+
+kafka_java_package_ubuntu: openjdk-17-jre-headless
+# Debian 13 (trixie) main no longer ships OpenJDK 17 — 21 is the LTS in mirror.
+kafka_java_package_debian: openjdk-21-jre-headless
+kafka_java_package_oracle: java-17-openjdk-headless
+kafka_user_shell: /usr/sbin/nologin
+kafka_service_name: kafka

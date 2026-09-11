@@ -1,0 +1,223 @@
+---
+- name: Resolve Kafka download URL
+  ansible.builtin.set_fact:
+    kafka_download_effective_url: >-
+      {{
+        kafka_download_url
+        if (kafka_download_url | default('') | trim | length > 0)
+        else (
+          kafka_download_mirror_url
+          if (kafka_download_mirror_url | default('') | trim | length > 0)
+          else kafka_download_default_url
+        )
+      }}
+
+- name: Build Kafka firewalld port list for this node
+  ansible.builtin.set_fact:
+    kafka_firewalld_ports: >-
+      {{
+        (
+          (
+            [kafka_controller_port ~ '/tcp']
+            if ('kafka_controllers' in group_names)
+            else []
+          )
+          + (
+            [kafka_broker_port ~ '/tcp']
+            if ('kafka_brokers' in group_names)
+            else []
+          )
+        )
+      }}
+  when:
+    - kafka_firewalld_enabled | default(true) | bool
+    - ansible_facts['distribution'] == 'OracleLinux'
+
+- name: Gather service facts for firewalld guards
+  ansible.builtin.service_facts:
+  when:
+    - kafka_firewalld_enabled | default(true) | bool
+    - ansible_facts['distribution'] == 'OracleLinux'
+
+- name: Open Kafka ports in firewalld (Oracle Linux)
+  ansible.posix.firewalld:
+    zone: public
+    port: "{{ item }}"
+    permanent: true
+    immediate: true
+    state: enabled
+  loop: "{{ kafka_firewalld_ports | default([]) }}"
+  when:
+    - kafka_firewalld_enabled | default(true) | bool
+    - ansible_facts['distribution'] == 'OracleLinux'
+    - (ansible_facts.services['firewalld.service'].state | default('stopped')) == 'running'
+    - (kafka_firewalld_ports | default([]) | length) > 0
+
+- name: Install Java runtime (Ubuntu)
+  ansible.builtin.apt:
+    name:
+      - "{{ kafka_java_package_ubuntu }}"
+      - tar
+      - ca-certificates
+    state: present
+    update_cache: true
+  when: ansible_facts['distribution'] == 'Ubuntu'
+
+- name: Install Java runtime (Debian)
+  ansible.builtin.apt:
+    name:
+      - "{{ kafka_java_package_debian }}"
+      - tar
+      - ca-certificates
+    state: present
+    update_cache: true
+  when: ansible_facts['distribution'] == 'Debian'
+
+- name: Install Java runtime (Oracle Linux)
+  ansible.builtin.dnf:
+    name:
+      - "{{ kafka_java_package_oracle }}"
+      - tar
+      - ca-certificates
+    state: present
+  when: ansible_facts['distribution'] == 'OracleLinux'
+
+- name: Fail when OS unsupported for Kafka node install
+  ansible.builtin.fail:
+    msg: >-
+      Unsupported OS {{ ansible_facts['distribution'] | default('unknown') }}
+      ({{ ansible_facts['os_family'] | default('?') }}
+      {{ ansible_facts['distribution_version'] | default('') }})
+      for 200_kafka_node. Supported: Ubuntu, Debian, OracleLinux.
+  when: ansible_facts['distribution'] not in ['Ubuntu', 'Debian', 'OracleLinux']
+
+- name: Create Kafka group
+  ansible.builtin.group:
+    name: "{{ kafka_group }}"
+    system: true
+
+- name: Create Kafka user
+  ansible.builtin.user:
+    name: "{{ kafka_user }}"
+    group: "{{ kafka_group }}"
+    system: true
+    shell: "{{ kafka_user_shell }}"
+    home: "{{ kafka_data_dir }}"
+    create_home: false
+
+- name: Create Kafka directories
+  ansible.builtin.file:
+    path: "{{ item }}"
+    state: directory
+    owner: "{{ kafka_user }}"
+    group: "{{ kafka_group }}"
+    mode: "0755"
+  loop:
+    - "{{ kafka_install_root }}"
+    - "{{ kafka_conf_dir }}"
+    - "{{ kafka_data_dir }}"
+    - "{{ kafka_log_dir }}"
+
+- name: Check Kafka install marker on node
+  ansible.builtin.stat:
+    path: "{{ kafka_node_install_marker }}"
+  register: kafka_node_marker_stat
+
+- name: Read Kafka install marker on node
+  ansible.builtin.slurp:
+    src: "{{ kafka_node_install_marker }}"
+  register: kafka_node_marker_slurp
+  when: kafka_node_marker_stat.stat.exists | default(false)
+
+- name: Remember Kafka install state
+  ansible.builtin.set_fact:
+    kafka_install_ok: >-
+      {{
+        kafka_node_marker_stat.stat.exists | default(false)
+        and (
+          (kafka_node_marker_slurp.content | default('') | b64decode | trim)
+          == (kafka_version | string)
+        )
+      }}
+
+- name: Stage Kafka archive on Ansible controller
+  when: not (kafka_install_ok | default(false) | bool)
+  ansible.builtin.import_tasks: stage_kafka_archive.yaml
+
+- name: Ensure versioned install directory
+  ansible.builtin.file:
+    path: "{{ kafka_install_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  when: not (kafka_install_ok | default(false) | bool)
+
+- name: Copy Kafka archive to node
+  ansible.builtin.copy:
+    src: "{{ kafka_controller_archive_path }}"
+    dest: "/tmp/{{ kafka_archive_filename }}"
+    mode: "0644"
+  when: not (kafka_install_ok | default(false) | bool)
+
+- name: Extract Kafka archive on node
+  ansible.builtin.unarchive:
+    src: "/tmp/{{ kafka_archive_filename }}"
+    dest: "{{ kafka_install_dir }}"
+    remote_src: true
+    extra_opts:
+      - --strip-components=1
+    owner: root
+    group: root
+  when: not (kafka_install_ok | default(false) | bool)
+
+- name: Symlink Kafka current
+  ansible.builtin.file:
+    src: "{{ kafka_install_dir }}"
+    dest: "{{ kafka_current_link }}"
+    state: link
+    force: true
+  when: not (kafka_install_ok | default(false) | bool)
+
+- name: Record Kafka install version on node
+  ansible.builtin.copy:
+    dest: "{{ kafka_node_install_marker }}"
+    content: "{{ kafka_version }}\n"
+    mode: "0644"
+    owner: root
+    group: root
+  when: not (kafka_install_ok | default(false) | bool)
+
+- name: Remove temporary Kafka archive on node
+  ansible.builtin.file:
+    path: "/tmp/{{ kafka_archive_filename }}"
+    state: absent
+  when: not (kafka_install_ok | default(false) | bool)
+
+- name: Check Kafka systemd unit before post-upgrade restart
+  ansible.builtin.stat:
+    path: /etc/systemd/system/{{ kafka_service_name }}.service
+  register: kafka_systemd_unit_stat
+  when: not (kafka_install_ok | default(false) | bool)
+
+- name: Restart Kafka after binary upgrade when unit already exists
+  ansible.builtin.systemd:
+    name: "{{ kafka_service_name }}"
+    state: restarted
+    daemon_reload: true
+  when:
+    - not (kafka_install_ok | default(false) | bool)
+    - kafka_systemd_unit_stat.stat.exists | default(false)
+
+- name: Require kafka-server-start.sh present
+  ansible.builtin.stat:
+    path: "{{ kafka_current_link }}/bin/kafka-server-start.sh"
+  register: kafka_server_start_stat
+
+- name: Assert Kafka binaries installed
+  ansible.builtin.assert:
+    that:
+      - kafka_server_start_stat.stat.exists | default(false)
+      - kafka_server_start_stat.stat.executable | default(false)
+    fail_msg: >-
+      Kafka binaries missing under {{ kafka_current_link }}/bin after install.
